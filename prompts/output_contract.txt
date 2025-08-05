@@ -1,0 +1,26 @@
+This document reminds the EXECUTOR of the required output format.
+
+Contract
+- The HTTP response body must be a JSON ARRAY ONLY. No keys, no wrapper object, no prose.
+- The order of items MUST match the order in the QUESTION.
+- If the task asks for an image, return it as a base64-encoded PNG data URI:
+  "data:image/png;base64,<...>"
+- Keep the encoded image under ~100,000 bytes if requested (adjust dpi/figsize).
+
+Examples
+- Four-item response:
+  [1, "Titanic", 0.485782, "data:image/png;base64,iVBORw0KG..."]
+
+- Two-item response:
+  ["Some answer", "Another answer"]
+
+Validation checklist (before printing)
+- Is the final value a JSON array (list), not a dict or string?
+- Are numeric types actually numeric (int/float) after parsing?
+- Does the image render if decoded?
+- No extra logs, print statements, or explanations—print ONLY the JSON array.
+
+Pitfalls to avoid
+- Don’t include trailing commas in JSON.
+- Don’t print Python lists with single quotes—ensure valid JSON (double quotes for strings).
+- Don’t exceed time budget; avoid heavy plotting styles and large images.
