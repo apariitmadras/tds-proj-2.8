@@ -1,6 +1,15 @@
 # main.py
 # Executor (ChatGPT/tools): runs the plan → scraping → extraction → code execution.
 # Exposes: run_agent_for_api(task: str, plan: str = "") -> list
+#
+# Env vars required at runtime:
+#   - OPENAI_API_KEY   (required)
+#   - OPENAI_BASE      (optional, default: https://api.openai.com)
+#   - EXECUTOR_MODEL   (optional, default: gpt-4o-mini)
+#
+# Notes:
+# - Playwright/Chromium must be installed in the container (see docker/).
+# - The model is expected to return ONLY the final JSON array in the last message.
 
 from __future__ import annotations
 
@@ -158,25 +167,36 @@ def _system_prompt() -> str:
         "(2) extract the necessary data, (3) when ready, generate complete Python code and call "
         "'answer_questions' with it. The code MUST print ONLY the final JSON array required by the task, "
         "e.g., [1, \"Titanic\", 0.485782, \"data:image/png;base64,...\"]. "
-        "Do not include explanations in the final assistant message—return only the JSON array."
+        "Do not include explanations in your final assistant message—return only the JSON array."
     )
 
 
 def _chat(messages: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Single chat turn to an OpenAI-compatible endpoint with tools enabled.
+    Single chat turn to the OpenAI Chat Completions API with tools enabled.
     Returns the assistant message object.
     """
-    url = "https://aipipe.org/openai/v1/chat/completions"
-    token = os.getenv("AIPIPE_TOKEN")
+    base = os.getenv("OPENAI_BASE", "https://api.openai.com").rstrip("/")
+    token = os.getenv("OPENAI_API_KEY")
     if not token:
-        raise RuntimeError("Missing AIPIPE_TOKEN environment variable")
+        raise RuntimeError("Missing OPENAI_API_KEY environment variable")
+
+    url = f"{base}/v1/chat/completions"
+    model = os.getenv("EXECUTOR_MODEL", "gpt-4o-mini")
 
     with httpx.Client(timeout=120) as client:
         r = client.post(
             url,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-            json={"model": "gpt-4o-mini", "messages": messages, "tools": tools, "tool_choice": "auto"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": messages,
+                "tools": tools,
+                "tool_choice": "auto",
+            },
         )
         r.raise_for_status()
         data = r.json()
@@ -234,12 +254,14 @@ async def run_agent_for_api(task: str, plan: str = "") -> list:
 
     start = time.time()
     while True:
-        if time.time() - start > 110:  # safety budget for the tool loop; API has its own outer timeout
+        # Safety budget for the tool loop; your API layer should also enforce an outer timeout (~170s).
+        if time.time() - start > 110:
             raise TimeoutError("Tool loop exceeded time budget")
 
         msg = _chat(messages)
         tool_calls = msg.get("tool_calls") or []
 
+        # If no tool calls, treat this as final content
         if not tool_calls:
             final_text = (msg.get("content") or "").strip()
             try:
@@ -250,13 +272,16 @@ async def run_agent_for_api(task: str, plan: str = "") -> list:
             except json.JSONDecodeError as e:
                 raise ValueError(f"Final assistant content was not valid JSON: {e}")
 
+        # Record the assistant turn that requested tool(s)
         messages.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
 
+        # Execute each tool call and append its result
         for tc in tool_calls:
             fn_name = tc["function"]["name"]
             args = _parse_args(tc["function"].get("arguments"))
             out = await _call_tool(fn_name, args)
-            messages.append({"role": "tool", "tool_call_id": tc["id"], "name": fn_name, "content": out})
+            # OpenAI expects role="tool" with tool_call_id and content
+            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": out})
 
 
 # -----------------------------------------------------------------------------
